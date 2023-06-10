@@ -1,0 +1,32 @@
+---
+BasedOnStyle: LLVM
+AlignAfterOpenBracket: BlockIndent
+AlignArrayOfStructures: Right
+AlignConsecutiveBitFields:
+  Enabled: true
+AllowAllParametersOfDeclarationOnNextLine: false
+AllowShortEnumsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: None
+AlwaysBreakBeforeMultilineStrings: true
+AlwaysBreakTemplateDeclarations: No
+BinPackArguments: false
+BinPackParameters: false
+BraceWrapping:
+  AfterCaseLable: false
+  AfterClass: true
+ColumnLimit: 0
+Cpp11BracedListStyle: false
+IncludeBlocks: Regroup
+IndentCaseBlocks: false
+IndentCaseLabels: true
+IndentPPDirectives: AfterHash
+IndentWidth: 4
+InsertBraces: true
+InsertNewlineAtEOF: true
+KeepEmptyLinesAtTheStartOfBlocks: false
+LineEnding: LF
+NamespaceIndentation: All
+RequiresClausePosition: WithPreceding
+SeparateDefinitionBlocks: Always
+SpaceBeforeInheritanceColon: false
+TabWidth: 4
