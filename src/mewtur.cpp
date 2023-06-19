@@ -15,7 +15,7 @@ const uint32_t PING_INTERVAL_SHORT = 2000;  // 2 seconds
 const uint32_t PING_INTERVAL_LONG  = 10000; // 10 seconds
 const int      RESPONSE_TIMEOUT    = 30000; // 30 seconds
 const int      IDLE_TIMEOUT        = 60000; // 1 minute
-const uint8_t DEBOUNCE_DELAY       = 50;    // If a change is seen, delay by this much and let things settle.
+const uint8_t  DEBOUNCE_DELAY      = 50;    // If a change is seen, delay by this much and let things settle.
 
 // All start bytes are followed by 0x01 SOH
 const uint8_t REQUEST_START_BYTE_PING_COMMAND = 0x07;           // BEL: For making a request or sending out a ping.
@@ -77,7 +77,7 @@ void setup() {
     pinMode(LED_DATA_PIN,  OUTPUT);       // Set the LED pin to be an output of course.
 
     // Set up the LED.
-    FastLED.addLeds<WS2811, LED_DATA_PIN, RGB>(leds, 1);
+    FastLED.addLeds<WS2811, LED_DATA_PIN, GRB>(leds, 1);
     FastLED.setBrightness(MIN_BRIGHTNESS);
     FastLED.show();
     FastLED.clear();
