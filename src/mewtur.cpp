@@ -25,7 +25,10 @@ const uint8_t STOP_BYTES[2]                   = { 0x17, 0x04 }; // ETB EOT: End 
                                                                 // End Of Transmission.
 const uint8_t READ_COMMAND                    = 0x05;           // ENQ - Enquiry
 const uint8_t WRITE_COMMAND                   = 0x1A;           // SUB - Substitute
-const uint8_t BUFFER_LENGTH                   = 39;             // 7 bytes + 32 bytes max data length = 39 bytes
+const uint8_t START_BYTE_2                    = 0x01;           // SOH: Second start byte of every frame.
+const uint8_t FRAME_OVERHEAD                  = 7;              // 2 start + command + variable + length + 2 stop.
+const uint8_t MAX_DATA_LENGTH                 = 32;
+const uint8_t BUFFER_LENGTH                   = FRAME_OVERHEAD + MAX_DATA_LENGTH; // 39 bytes
 const uint8_t INVERT_MUTE_CMD[8]              = { 0x07, 0x01, 0x1A, 0x00, 0x01, 0x02, 0x17, 0x04 };
 
 // LED brightness constants: Be mindful of power usage.
@@ -41,7 +44,6 @@ uint32_t pingInterval          = PING_INTERVAL_LONG; // Current ping interval to
 
 // Create a bitfield to hold booleans and super small values.
 struct Flags {
-    uint8_t awaitingResponse      : 1;
     uint8_t hasData               : 1;
     uint8_t hasError              : 1;
     uint8_t isStartupMode         : 1;
@@ -56,6 +58,7 @@ CRGB leds[1];
 
 // Prototype function.
 void doPing();
+bool isStartByte(uint8_t value);
 void processButton();
 void processData();
 bool processFailedResponseFrame();
@@ -179,22 +182,24 @@ void processData() {
     flags.hasError = false;
 
     if (flags.hasData) {
-        if (flags.awaitingResponse == true) {
-            // Process response frames
-            flags.awaitingResponse = false;
-            if (receiveBuffer[0] == RESPONSE_START_BYTE) {
+        // Dispatch on the frame's own type byte. The host can send a request (e.g. a mute state change)
+        // while we are waiting on a ping / read response, so we can't assume the next frame is the response.
+        switch (receiveBuffer[0]) {
+            case REQUEST_START_BYTE_PING_COMMAND:
+                flags.hasError = processRequestFrame();
+                break;
+
+            case RESPONSE_START_BYTE:
                 flags.hasError = processResponseFrame();
-            } else if (receiveBuffer[0] == FAILED_START_BYTE) {
+                break;
+
+            case FAILED_START_BYTE:
                 flags.hasError = processFailedResponseFrame();
-            } else {
-                // UNKNOWN!
+                break;
+
+            default:
+                // receiveSerialData() only accepts the start bytes above, so we shouldn't get here.
                 flags.hasError = true;
-            }
-        } else if (receiveBuffer[0] == REQUEST_START_BYTE_PING_COMMAND) {
-            flags.hasError = processRequestFrame();
-        } else {
-            // How did we get here, we don't know yet.
-            flags.hasError = true;
         }
 
         if (!flags.hasError) {
@@ -295,97 +300,66 @@ bool processResponseFrame() {
 }
 
 /**
+ * @brief Is this byte one of the first start bytes (request, response or failed response)?
+ *
+ * @return bool
+ */
+bool isStartByte(uint8_t value) {
+    return REQUEST_START_BYTE_PING_COMMAND == value || RESPONSE_START_BYTE == value || FAILED_START_BYTE == value;
+}
+
+/**
  * @brief Read data from the serial port to a buffer to be processed later.
+ *
+ * The end of a frame is found using the data length byte (offset 4), not by scanning for the stop bytes.
+ * The protocol has no escaping, so data that happens to contain 0x17 0x04 would otherwise end the frame early.
+ * The stop bytes are then checked at the position the length says they should be.
  */
 void receiveSerialData() {
            uint8_t receivedByte;
-    static uint8_t index                     = 0;
-    static bool    waitingForFirstStartByte  = true;
-    static bool    waitingForSecondStartByte = false;
-    static bool    waitingForSecondEndByte   = false;
-                   flags.hasData             = false;
+    static uint8_t index = 0; // Number of bytes of the current frame we have so far.
+                   flags.hasData = false;
 
     // Check for incoming serial data, as long as we already don't have data.
     while (Serial.available() > 0 && flags.hasData == false) {
         // Read one byte from the serial.
         receivedByte = Serial.read();
-        // Check if we are about to have an buffer overflow.
-        if (index >= BUFFER_LENGTH) {
-            // Looks like we have not found both of stop bytes yet and we've hit our limit.
-            // Decrement the index by two, to allow for the two stop bytes to appear maybe?
-            index = BUFFER_LENGTH - 2;
-        }
 
-        if (waitingForSecondEndByte) {
-            // Save the data to the buffer.
-            receiveBuffer[index] = receivedByte;
-
-            // The previous byte matched the first stop byte,
-            // so we are wating on the second end byte.
-            // Does this byte match second stop byte?
-            if (STOP_BYTES[1] == receivedByte) {
-                // Reset some variables, set the hasData variable to true,
-                // so we can process the buffer.
-                waitingForFirstStartByte = true;
-                waitingForSecondEndByte = false;
-                flags.hasData = true;
+        if (0 == index) {
+            // Waiting for the first start byte.
+            if (!isStartByte(receivedByte)) {
+                // Let's continue one and stop the LED flicker.
                 return;
             }
+        } else if (1 == index) {
+            // Waiting for the second start byte.
+            if (START_BYTE_2 != receivedByte) {
+                // Not a valid second start byte. This byte might be the first start byte of a new frame though.
+                index = 0;
+                if (isStartByte(receivedByte)) {
+                    receiveBuffer[index++] = receivedByte;
+                }
 
-            // False alarm, this byte did not match the second stop byte.
-            waitingForSecondEndByte = false;
+                continue;
+            }
+        } else if (4 == index && receivedByte > MAX_DATA_LENGTH) {
+            // Data length is out of range, so this isn't a valid frame. Start over.
+            index = 0;
+            continue;
         }
 
-        if (!waitingForSecondEndByte) {
-            // If we are waiting for the first start byte,
-            if (waitingForFirstStartByte) {
-                // Check if this byte matches the first start byte.
-                if (
-                    REQUEST_START_BYTE_PING_COMMAND == receivedByte ||
-                    RESPONSE_START_BYTE == receivedByte ||
-                    FAILED_START_BYTE == receivedByte
-                ) {
-                    // It did, so now we wait for the second start byte.
-                    // Reset the buffer index to start over.
-                    index                     = 0;
-                    waitingForFirstStartByte  = false;
-                    waitingForSecondStartByte = true;
-                    waitingForSecondEndByte   =  false;
-                    receiveBuffer[index]      = receivedByte;
-                    ++index;
-                } else {
-                    // Let's continue one and stop the LED flicker.
-                    return;
-                }
-            } else if (waitingForSecondStartByte) {
-                // Check if this byte matches the second start byte.
-                if (0x01 == receivedByte) {
-                    // It matched, so lets continue on.
-                    waitingForFirstStartByte  = false;
-                    waitingForSecondStartByte = false;
-                    waitingForSecondEndByte   = false;
-                    receiveBuffer[index]      = receivedByte;
-                    ++index;
-                } else {
-                    // This is not a valid second start byte.
-                    waitingForFirstStartByte  = true;
-                    waitingForSecondStartByte = false;
-                    waitingForSecondEndByte   = false;
-                }
-            } else {
-                // Save the byte to the buffer and increment our index variable.
-                receiveBuffer[index] = receivedByte;
+        receiveBuffer[index++] = receivedByte;
 
-                // Check to see if this matches the first stop byte.
-                if (STOP_BYTES[0] == receivedByte) {
-                    // This matches the first stop byte, so let's set it to look out for the second stop byte.
-                    waitingForFirstStartByte  = false;
-                    waitingForSecondStartByte = false;
-                    waitingForSecondEndByte   = true;
-                }
+        // Once we have the length byte, we know how long the whole frame is.
+        if (index >= FRAME_OVERHEAD && index == FRAME_OVERHEAD + receiveBuffer[4]) {
+            index = 0;
 
-                ++index;
+            if (STOP_BYTES[0] == receiveBuffer[FRAME_OVERHEAD + receiveBuffer[4] - 2] &&
+                STOP_BYTES[1] == receiveBuffer[FRAME_OVERHEAD + receiveBuffer[4] - 1]) {
+                // Got a full frame, so we can process the buffer.
+                flags.hasData = true;
             }
+            // Otherwise the stop bytes weren't where they should be. Drop the frame and wait for the next start byte.
         }
     }
 }
@@ -407,7 +381,6 @@ void requestMuteStatus() {
     };
 
     Serial.write(muteStatusEnquiry, 8);
-    flags.awaitingResponse = true;
 }
 
 /**
@@ -415,7 +388,6 @@ void requestMuteStatus() {
  */
 void sendPingRequest() {
     // Build ping request frame.
-    flags.awaitingResponse = true;
     byte pingRequest[19] = {
         REQUEST_START_BYTE_PING_COMMAND,
         0x01,
