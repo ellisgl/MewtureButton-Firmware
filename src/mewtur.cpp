@@ -2,8 +2,18 @@
 #include <FastLED.h>
 
 // Define what pin hardware is attached to.
-const uint8_t LED_DATA_PIN = 15;
+// Switch common goes to GND; contacts use the internal pullups (LOW = contact closed).
+#if defined(ARDUINO_ARCH_RP2040)
+// RP2040-Pico: SPDT switch with both contacts wired, WS2811/WS2812B on GP28.
+#define HAS_BUTTON_PIN_NC
+const uint8_t LED_DATA_PIN  = 28;
+const uint8_t BUTTON_PIN_NO = 27;
+const uint8_t BUTTON_PIN_NC = 26;
+#else
+// Wemos D1 Mini: only the normally open contact is wired.
+const uint8_t LED_DATA_PIN  = 15;
 const uint8_t BUTTON_PIN_NO = 2;
+#endif
 
 // Create the required ping body, which we use to broadcast our identitication.
 const uint8_t VENDOR_ID[4]  = { 0x00, 0x00, 0x00, 0x01 };
@@ -77,6 +87,9 @@ void setup() {
         ; // wait for serial port to connect. Needed for native USB
 
     pinMode(BUTTON_PIN_NO, INPUT_PULLUP); // Set the button pin to be an input with pullup, which will have less noise.
+#ifdef HAS_BUTTON_PIN_NC
+    pinMode(BUTTON_PIN_NC, INPUT_PULLUP);
+#endif
     pinMode(LED_DATA_PIN,  OUTPUT);       // Set the LED pin to be an output of course.
 
     // Set up the LED.
@@ -93,8 +106,8 @@ void setup() {
     flags.isStartupMode       = true;
     flags.previousButtonState = HIGH;
     flags.currentButtonState  = HIGH;
-    flags.previousLedState    = B01;
-    flags.currentLedState     = B01;
+    flags.previousLedState    = 0b01;
+    flags.currentLedState     = 0b01;
 }
 
 // Main loop, called every time.
@@ -140,7 +153,7 @@ void doPing() {
             if (fast) {
                 // If it's a short interval, that means it's been a long time since we had a successful communication.
                 // We should show this in some sort of visual form to the button pusher.
-                flags.currentLedState = B01;
+                flags.currentLedState = 0b01;
             }
 
             // Send a ping request, and update the last ping time.
@@ -155,6 +168,20 @@ void doPing() {
  * @brief Process the button state.
  */
 void processButton() {
+#ifdef HAS_BUTTON_PIN_NC
+    // SPDT debounce: only change state when exactly one contact is closed.
+    // While bouncing / in transit (both open or both closed), keep the last state.
+    uint8_t no = digitalRead(BUTTON_PIN_NO);
+    uint8_t nc = digitalRead(BUTTON_PIN_NC);
+
+    if (LOW == no && HIGH == nc) {
+        flags.currentButtonState = LOW;  // Pressed.
+    } else if (HIGH == no && LOW == nc) {
+        flags.currentButtonState = HIGH; // Released.
+    } else {
+        flags.currentButtonState = flags.previousButtonState;
+    }
+#else
     flags.currentButtonState = digitalRead(BUTTON_PIN_NO);
 
     if (flags.previousButtonState != flags.currentButtonState) {
@@ -166,6 +193,7 @@ void processButton() {
             return;
         }
     }
+#endif
 
     if (LOW == flags.currentButtonState && HIGH == flags.previousButtonState) {
         flags.previousButtonState = LOW;
@@ -239,10 +267,10 @@ bool processRequestFrame() {
             if (receiveBuffer[3] == 0x00) {
                 if (receiveBuffer[5] == 0x00) {
                     // Setting LED to indicate unmuted state.
-                    flags.currentLedState = B10;
+                    flags.currentLedState = 0b10;
                 } else if (receiveBuffer[5] == 0x01) {
                     // Setting LED to indicate muted state.
-                    flags.currentLedState = B11;
+                    flags.currentLedState = 0b11;
                 }
             }
             break;
@@ -270,10 +298,10 @@ bool processResponseFrame() {
             if (receiveBuffer[3] == 0x00) {
                 if (receiveBuffer[5] == 0x00) {
                     // Setting LED to indicate unmuted state.
-                    flags.currentLedState = B10;
+                    flags.currentLedState = 0b10;
                 } else if (receiveBuffer[5] == 0x01) {
                     // Setting LED to indicate muted state.
-                    flags.currentLedState = B11;
+                    flags.currentLedState = 0b11;
                 }
             }
             // Get
@@ -418,7 +446,7 @@ void sendPingRequest() {
  * @brief Set the LED color / effect based on state flag.
  */
 void setLed() {
-    if (flags.previousLedState == flags.currentLedState && flags.currentLedState != B01) {
+    if (flags.previousLedState == flags.currentLedState && flags.currentLedState != 0b01) {
         if (FastLED.getBrightness() != MAX_BRIGHTNESS) {
             // Make ure we are at max brightness.
             FastLED.setBrightness(MAX_BRIGHTNESS);
@@ -434,7 +462,7 @@ void setLed() {
     flags.previousLedState = flags.currentLedState;
 
     switch (flags.currentLedState) {
-        case B01: {
+        case 0b01: {
             // Pining state.
             // Yes, this needs to be surrounded by a block, if it's not it doesn't really run. Not sure why though.
             leds[0] = CRGB::Blue;
@@ -443,12 +471,12 @@ void setLed() {
             brightness = map(brightness, 0, 255, MIN_BRIGHTNESS, MAX_BRIGHTNESS);
             break;
         }
-        case B10:
+        case 0b10:
             // Unmuted state.
             leds[0] = CRGB::Green;
             brightness = MAX_BRIGHTNESS;
             break;
-        case B11:
+        case 0b11:
             // Muted state.
             leds[0] = CRGB::Red;
             brightness = MAX_BRIGHTNESS;
